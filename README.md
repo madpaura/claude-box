@@ -168,3 +168,7 @@ Or point a single run at either: `CLAUDE_BOX_IMAGE=claude-code:2.1.220-node clau
 | `.github/workflows/publish.yml` | manual CI that builds and publishes both flavours to GHCR |
 | `box-home/` | container's persistent HOME — `.claude.json`, caches, `.npm-global` (gitignored) |
 | `dist/` | saved image archives (gitignored) |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
