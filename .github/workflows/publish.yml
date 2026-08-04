@@ -1,0 +1,105 @@
+name: Publish images
+
+# Manual only: click "Run workflow", or push a v* tag.
+on:
+  workflow_dispatch:
+    inputs:
+      claude_version:
+        description: "Claude Code version (stable | latest | X.Y.Z)"
+        default: stable
+      node_version:
+        description: "Node version for the -node image (lts | latest | vX.Y.Z)"
+        default: lts
+      mark_latest:
+        description: "Also update the :latest / :node tags"
+        type: boolean
+        default: true
+  push:
+    tags: ["v*"]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: base
+            with_node: "0"
+          - flavor: node
+            with_node: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Resolve the concrete Claude version now so the image gets a real version tag
+      # (the Dockerfile would otherwise resolve "stable" internally).
+      - name: Resolve versions
+        id: v
+        run: |
+          req="${{ inputs.claude_version || 'stable' }}"
+          case "$req" in
+            stable|latest) v="$(curl -fsSL "https://downloads.claude.ai/claude-code-releases/$req")" ;;
+            *) v="$req" ;;
+          esac
+          echo "claude=$v" >> "$GITHUB_OUTPUT"
+          echo "Resolved claude version: $v"
+
+      - name: Build tag list
+        id: tags
+        run: |
+          img="${{ env.REGISTRY }}/${{ env.IMAGE }}"
+          img="$(echo "$img" | tr 'A-Z' 'a-z')"
+          v="${{ steps.v.outputs.claude }}"
+          if [ "${{ matrix.flavor }}" = node ]; then
+            tags="$img:$v-node"
+            [ "${{ inputs.mark_latest || 'true' }}" = true ] && tags="$tags,$img:node"
+          else
+            tags="$img:$v"
+            [ "${{ inputs.mark_latest || 'true' }}" = true ] && tags="$tags,$img:latest"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "Tags: $tags"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            CLAUDE_VERSION=${{ steps.v.outputs.claude }}
+            WITH_NODE=${{ matrix.with_node }}
+            NODE_VERSION=${{ inputs.node_version || 'lts' }}
+            USERNAME=claude
+            UID=1000
+            GID=1000
+          labels: |
+            org.opencontainers.image.title=claude-box
+            org.opencontainers.image.description=Claude Code in a minimal container (${{ matrix.flavor }})
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.v.outputs.claude }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the pushed image
+        run: |
+          tag="$(echo '${{ steps.tags.outputs.tags }}' | cut -d, -f1)"
+          docker run --rm "$tag" --version
+          if [ "${{ matrix.flavor }}" = node ]; then
+            docker run --rm --entrypoint node "$tag" --version
+          fi

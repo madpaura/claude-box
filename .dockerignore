@@ -1,0 +1,4 @@
+# The build downloads everything it needs; nothing from this folder belongs in the
+# build context.
+*
+!Dockerfile

@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Launch Claude Code inside a container, in the current folder (or -C DIR).
+#
+#   claude-box                     # like running `claude` in $PWD
+#   claude-box -C ~/work/repo      # run against another folder
+#   claude-box --continue          # any other args are passed straight to claude
+#
+# The container gets: your real ~/.claude (login, settings, plugins, skills),
+# your git identity (read-only), and the target folder — nothing else from $HOME.
+# Paths are mounted at their host locations so absolute paths in settings and
+# session files keep working. Container is ephemeral (--rm).
+
+set -euo pipefail
+
+IMAGE="${CLAUDE_BOX_IMAGE:-claude-code:local}"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+BOX_HOME="${CLAUDE_BOX_HOME:-$SCRIPT_DIR/box-home}"
+
+DIR="$PWD"
+if [ "${1:-}" = "-C" ] || [ "${1:-}" = "--dir" ]; then
+  [ $# -ge 2 ] || { echo "claude-box: $1 needs a directory argument" >&2; exit 2; }
+  DIR="$2"
+  shift 2
+fi
+
+DIR="$(realpath "$DIR")"
+[ -d "$DIR" ] || { echo "claude-box: not a directory: $DIR" >&2; exit 2; }
+
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "claude-box: image '$IMAGE' not found." >&2
+  echo "  build it:  $SCRIPT_DIR/build.sh" >&2
+  echo "  or load a saved one:  $SCRIPT_DIR/load-image.sh <file.tar.zst>" >&2
+  exit 1
+fi
+
+[ -d "$HOME/.claude" ] || { echo "claude-box: $HOME/.claude not found — log in on the host first" >&2; exit 1; }
+
+# Pre-create the bind-mount targets so docker doesn't create them as root.
+mkdir -p "$BOX_HOME/.claude"
+[ -f "$HOME/.gitconfig" ] && touch "$BOX_HOME/.gitconfig"
+
+# The container home is separate from the host home, so it needs its own
+# ~/.claude.json. Seed it (and mark the target folder trusted) to skip the
+# onboarding wizard and per-folder trust prompt. Credentials come from ~/.claude.
+python3 - "$BOX_HOME/.claude.json" "$DIR" <<'PY'
+import json, os, sys
+
+path, workdir = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        cfg = {}
+except (FileNotFoundError, ValueError):
+    cfg = {}
+
+cfg.setdefault("hasCompletedOnboarding", True)
+cfg.setdefault("theme", "dark")
+cfg.setdefault("installMethod", "native")
+cfg.setdefault("autoUpdates", False)
+
+projects = cfg.setdefault("projects", {})
+if not isinstance(projects, dict):
+    projects = cfg["projects"] = {}
+projects.setdefault(workdir, {})["hasTrustDialogAccepted"] = True
+
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(cfg, f, indent=2)
+os.replace(tmp, path)
+PY
+
+# The image may have been built for a different user/uid (e.g. a prebuilt one from
+# GHCR). Hand the container a passwd/group entry matching *this* user so tools that
+# look up the uid — git, shells, anything calling getpwuid — see a real account.
+cat > "$BOX_HOME/passwd" <<EOF
+root:x:0:0:root:/root:/bin/bash
+$(id -un):x:$(id -u):$(id -g):$(id -un):$HOME:/bin/bash
+EOF
+cat > "$BOX_HOME/group" <<EOF
+root:x:0:
+$(id -gn):x:$(id -g):
+EOF
+
+MOUNTS=(
+  -v "$BOX_HOME:$HOME"
+  -v "$HOME/.claude:$HOME/.claude"
+  -v "$DIR:$DIR"
+  -v "$BOX_HOME/passwd:/etc/passwd:ro"
+  -v "$BOX_HOME/group:/etc/group:ro"
+)
+[ -f "$HOME/.gitconfig" ] && MOUNTS+=(-v "$HOME/.gitconfig:$HOME/.gitconfig:ro")
+
+# -t only when there's a real terminal, so `claude-box -p "..."` works in pipelines.
+TTY_FLAGS=(-i)
+[ -t 0 ] && [ -t 1 ] && TTY_FLAGS+=(-t)
+
+exec docker run --rm "${TTY_FLAGS[@]}" --init \
+  --name "claude-box-$(basename "$DIR" | tr -c 'A-Za-z0-9_.-' '-')-$$" \
+  --hostname claude-box \
+  -u "$(id -u):$(id -g)" \
+  "${MOUNTS[@]}" \
+  -w "$DIR" \
+  -e "HOME=$HOME" \
+  -e "USER=$(id -un)" \
+  -e "NPM_CONFIG_PREFIX=$HOME/.npm-global" \
+  -e "PATH=$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin" \
+  -e TERM -e COLORTERM -e LANG \
+  "$IMAGE" "$@"

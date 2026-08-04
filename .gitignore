@@ -1,0 +1,5 @@
+# Container HOME — per-machine state, can be large
+box-home/
+
+# Saved image archives — hundreds of MB
+dist/
