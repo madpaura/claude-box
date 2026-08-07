@@ -1,0 +1,45 @@
+# LiteLLM proxy config — translates Claude Code's Anthropic Messages API calls
+# (/v1/messages) into OpenAI /chat/completions calls against an in-house gateway.
+#
+# Values come from gateway.env (see gateway.env.example). Claude Code asks for the
+# model names in ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL; those must match the
+# model_name entries below.
+
+model_list:
+  # Main model — used for Sonnet/Opus slots (i.e. normal turns).
+  - model_name: inhouse-main
+    litellm_params:
+      model: openai/PLACEHOLDER_MAIN_MODEL
+      api_base: os.environ/INHOUSE_LLM_BASE_URL
+      api_key: os.environ/INHOUSE_LLM_TOKEN
+      # Identifying headers the gateway was provisioned against (RooCode).
+      extra_headers:
+        User-Agent: RooCode/3.52.3
+        X-Title: Roo Code
+        HTTP-Referer: https://github.com/RooVetGit/Roo-Cline
+
+  # Small/fast model — used for background work (titles, summaries, file watching).
+  # Point it at a cheaper model if the gateway offers one; same model is fine.
+  - model_name: inhouse-small
+    litellm_params:
+      model: openai/PLACEHOLDER_SMALL_MODEL
+      api_base: os.environ/INHOUSE_LLM_BASE_URL
+      api_key: os.environ/INHOUSE_LLM_TOKEN
+      extra_headers:
+        User-Agent: RooCode/3.52.3
+        X-Title: Roo Code
+        HTTP-Referer: https://github.com/RooVetGit/Roo-Cline
+
+litellm_settings:
+  # Claude Code sends Anthropic-only params (cache_control, thinking, betas...).
+  # Drop anything the upstream OpenAI schema doesn't accept instead of erroring.
+  drop_params: true
+
+  # Critical for an in-house gateway: by default LiteLLM serves /v1/messages for
+  # `openai/*` models by calling the upstream Responses API (/v1/responses), which
+  # OpenAI-compatible gateways generally do not implement — you get a 404. This
+  # opts out and routes through /chat/completions instead.
+  use_chat_completions_url_for_anthropic_messages: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

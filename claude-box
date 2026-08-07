@@ -3,6 +3,7 @@
 #
 #   claude-box                     # like running `claude` in $PWD
 #   claude-box -C ~/work/repo      # run against another folder
+#   claude-box --inhouse           # use the in-house LLM gateway instead of Anthropic
 #   claude-box --continue          # any other args are passed straight to claude
 #
 # The container gets: your real ~/.claude (login, settings, plugins, skills),
@@ -17,11 +18,15 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 BOX_HOME="${CLAUDE_BOX_HOME:-$SCRIPT_DIR/box-home}"
 
 DIR="$PWD"
-if [ "${1:-}" = "-C" ] || [ "${1:-}" = "--dir" ]; then
-  [ $# -ge 2 ] || { echo "claude-box: $1 needs a directory argument" >&2; exit 2; }
-  DIR="$2"
-  shift 2
-fi
+INHOUSE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -C|--dir)  [ $# -ge 2 ] || { echo "claude-box: $1 needs a directory argument" >&2; exit 2; }
+               DIR="$2"; shift 2 ;;
+    --inhouse) INHOUSE=1; shift ;;
+    *)         break ;;
+  esac
+done
 
 DIR="$(realpath "$DIR")"
 [ -d "$DIR" ] || { echo "claude-box: not a directory: $DIR" >&2; exit 2; }
@@ -91,6 +96,43 @@ MOUNTS=(
 )
 [ -f "$HOME/.gitconfig" ] && MOUNTS+=(-v "$HOME/.gitconfig:$HOME/.gitconfig:ro")
 
+# --inhouse: talk to the in-house OpenAI-compatible gateway through the LiteLLM
+# sidecar instead of api.anthropic.com. The sidecar exposes an Anthropic Messages
+# endpoint, which is the only dialect Claude Code speaks.
+NETFLAGS=()
+ENVFLAGS=()
+if [ "$INHOUSE" = 1 ]; then
+  NETWORK="${CLAUDE_BOX_NETWORK:-claude-box-net}"
+  GATEWAY_NAME="${CLAUDE_BOX_GATEWAY_NAME:-claude-box-llm-gateway}"
+  ENV_FILE="${CLAUDE_BOX_GATEWAY_ENV:-$SCRIPT_DIR/llm-gateway/gateway.env}"
+
+  [ -f "$ENV_FILE" ] || { echo "claude-box: $ENV_FILE not found — see llm-gateway/gateway.env.example" >&2; exit 1; }
+  # shellcheck disable=SC1090
+  set -a; . "$ENV_FILE"; set +a
+
+  docker ps --filter "name=^$GATEWAY_NAME$" --format '{{.Names}}' | grep -q . || {
+    echo "claude-box: LLM gateway '$GATEWAY_NAME' is not running." >&2
+    echo "  start it:  $SCRIPT_DIR/llm-gateway/gateway.sh up" >&2
+    exit 1; }
+
+  NETFLAGS=(--network "$NETWORK")
+  # Every model slot points at the proxy's model names: the main one for normal
+  # turns (settings.json "model" resolves through the opus/sonnet slots) and the
+  # small one for background work.
+  ENVFLAGS=(
+    -e "ANTHROPIC_BASE_URL=http://$GATEWAY_NAME:4000"
+    -e "ANTHROPIC_AUTH_TOKEN=${LITELLM_MASTER_KEY:?set in $ENV_FILE}"
+    -e "ANTHROPIC_DEFAULT_OPUS_MODEL=inhouse-main"
+    -e "ANTHROPIC_DEFAULT_SONNET_MODEL=inhouse-main"
+    -e "ANTHROPIC_DEFAULT_HAIKU_MODEL=inhouse-small"
+    -e "ANTHROPIC_MODEL=inhouse-main"
+    -e "ANTHROPIC_SMALL_FAST_MODEL=inhouse-small"
+    # Nothing should leak to Anthropic while running against the in-house gateway.
+    -e "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+    -e "DISABLE_TELEMETRY=1"
+  )
+fi
+
 # -t only when there's a real terminal, so `claude-box -p "..."` works in pipelines.
 TTY_FLAGS=(-i)
 [ -t 0 ] && [ -t 1 ] && TTY_FLAGS+=(-t)
@@ -100,10 +142,12 @@ exec docker run --rm "${TTY_FLAGS[@]}" --init \
   --hostname claude-box \
   -u "$(id -u):$(id -g)" \
   "${MOUNTS[@]}" \
+  "${NETFLAGS[@]+"${NETFLAGS[@]}"}" \
   -w "$DIR" \
   -e "HOME=$HOME" \
   -e "USER=$(id -un)" \
   -e "NPM_CONFIG_PREFIX=$HOME/.npm-global" \
   -e "PATH=$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin" \
   -e TERM -e COLORTERM -e LANG \
+  "${ENVFLAGS[@]+"${ENVFLAGS[@]}"}" \
   "$IMAGE" "$@"

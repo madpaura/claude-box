@@ -3,3 +3,9 @@ box-home/
 
 # Saved image archives — hundreds of MB
 dist/
+
+# Gateway credentials
+llm-gateway/gateway.env
+
+__pycache__/
+*.pyc

@@ -39,10 +39,11 @@ cd ~/some/repo && claude-box
 ### Launcher usage
 
 ```
-claude-box [-C DIR] [any claude args...]
+claude-box [-C DIR] [--inhouse] [any claude args...]
 
 claude-box                        # run against $PWD
 claude-box -C ~/work/repo         # run against another folder
+claude-box --inhouse              # use the in-house LLM gateway (see below)
 claude-box --continue             # args are passed straight through to claude
 claude-box -p "summarise README"  # headless mode works too (no TTY required)
 ```
@@ -89,6 +90,84 @@ The tarball comes from nodejs.org and is verified against that release's
 `claude-code:<claude-version>-node`, and archives are named to match. `npm`'s global
 prefix is `~/.npm-global` inside the container — which lives in `box-home/` on the
 host, so `npm i -g …` works without root and **persists across containers**.
+
+## Using an in-house OpenAI-compatible LLM gateway
+
+Claude Code only speaks the **Anthropic Messages API**. If your organisation runs an
+OpenAI-compatible gateway (`/chat/completions`), it needs a translating proxy in
+front. `llm-gateway/` ships one: a pinned LiteLLM sidecar that exposes
+`/v1/messages`, forwards to your gateway's `/chat/completions`, and injects the
+identifying headers the gateway expects.
+
+```
+claude-box  ──/v1/messages──▶  LiteLLM sidecar  ──/chat/completions──▶  in-house gateway
+                               (adds RooCode headers + bearer token)
+```
+
+**1. Check what your gateway supports** — run this from a machine that can reach it:
+
+```bash
+./llm-gateway/probe.py --base-url http://gateway.internal/v1 \
+                       --token "$INHOUSE_LLM_TOKEN" --model admin
+```
+
+It reports whether the gateway already speaks the Anthropic API (in which case skip
+the sidecar entirely), whether `/chat/completions` works, and — the make-or-break
+test — whether the model returns `tool_calls`. **Claude Code cannot function without
+OpenAI function calling**: every file read, edit and command is a tool call.
+
+**2. Configure and start the sidecar:**
+
+```bash
+cp llm-gateway/gateway.env.example llm-gateway/gateway.env
+chmod 600 llm-gateway/gateway.env     # base URL, token, model names
+$EDITOR llm-gateway/gateway.env
+
+./llm-gateway/gateway.sh up           # start   (status | logs | down | restart)
+```
+
+**3. Run Claude Code against it:**
+
+```bash
+cd ~/some/repo
+claude-box --inhouse
+```
+
+`--inhouse` joins the container to the sidecar's docker network and sets
+`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` plus all model slots
+(`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` → `inhouse-main` / `inhouse-small`),
+so whichever model your `settings.json` selects resolves to the gateway. It also sets
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `DISABLE_TELEMETRY=1`. Without the
+flag, nothing changes — you still talk to Anthropic with your normal login.
+
+### Gateway files
+
+| File | Purpose |
+|---|---|
+| `llm-gateway/gateway.env.example` | template for base URL, token, model names (copy to `gateway.env`, gitignored) |
+| `llm-gateway/config.yaml` | LiteLLM config: model mapping, custom headers, param dropping |
+| `llm-gateway/gateway.sh` | `up` / `down` / `status` / `logs` / `restart` for the sidecar |
+| `llm-gateway/probe.py` | connectivity + capability probe (stdlib only, run it anywhere) |
+| `llm-gateway/mock-openai.py` | fake gateway for testing the pipeline offline |
+
+### Notes and limits
+
+- **Two config lines matter more than the rest.** `drop_params: true` discards the
+  Anthropic-only fields Claude Code sends (`cache_control`, thinking blocks, betas).
+  `use_chat_completions_url_for_anthropic_messages: true` is essential: without it
+  LiteLLM serves `/v1/messages` by calling the upstream *Responses API*
+  (`/v1/responses`), which in-house gateways generally don't implement — every
+  request 404s.
+- **No prompt caching** through the bridge, so long sessions re-send context and cost
+  more latency than they would against Anthropic.
+- **Custom headers** are set per model in `config.yaml` under `extra_headers` — the
+  RooCode `User-Agent` / `X-Title` / `HTTP-Referer` trio. Change them there if your
+  gateway was provisioned against a different client.
+- **Context window**: if the gateway's model has a smaller window than Claude's,
+  set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` in the launcher env to avoid overflow errors.
+- **Testing without the gateway**: run `./llm-gateway/mock-openai.py` and point
+  `gateway.env` at `http://host.docker.internal:8899/v1` — it logs the headers it
+  receives, so you can confirm what actually reaches the upstream.
 
 ## Ship the image without a registry
 
