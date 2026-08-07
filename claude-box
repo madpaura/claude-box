@@ -116,17 +116,19 @@ if [ "$INHOUSE" = 1 ]; then
     exit 1; }
 
   NETFLAGS=(--network "$NETWORK")
-  # Every model slot points at the proxy's model names: the main one for normal
-  # turns (settings.json "model" resolves through the opus/sonnet slots) and the
-  # small one for background work.
+  # Every model slot points at the gateway's real model names — the proxy registers
+  # them verbatim, so the name Claude Code sends is a name the gateway accepts even
+  # if something in the chain forwards it unmapped.
+  MAIN_MODEL="${INHOUSE_LLM_MODEL:?set in $ENV_FILE}"
+  SMALL_MODEL="${INHOUSE_LLM_SMALL_MODEL:-$MAIN_MODEL}"
   ENVFLAGS=(
     -e "ANTHROPIC_BASE_URL=http://$GATEWAY_NAME:4000"
     -e "ANTHROPIC_AUTH_TOKEN=${LITELLM_MASTER_KEY:?set in $ENV_FILE}"
-    -e "ANTHROPIC_DEFAULT_OPUS_MODEL=inhouse-main"
-    -e "ANTHROPIC_DEFAULT_SONNET_MODEL=inhouse-main"
-    -e "ANTHROPIC_DEFAULT_HAIKU_MODEL=inhouse-small"
-    -e "ANTHROPIC_MODEL=inhouse-main"
-    -e "ANTHROPIC_SMALL_FAST_MODEL=inhouse-small"
+    -e "ANTHROPIC_DEFAULT_OPUS_MODEL=$MAIN_MODEL"
+    -e "ANTHROPIC_DEFAULT_SONNET_MODEL=$MAIN_MODEL"
+    -e "ANTHROPIC_DEFAULT_HAIKU_MODEL=$SMALL_MODEL"
+    -e "ANTHROPIC_MODEL=$MAIN_MODEL"
+    -e "ANTHROPIC_SMALL_FAST_MODEL=$SMALL_MODEL"
     # Nothing should leak to Anthropic while running against the in-house gateway.
     -e "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
     -e "DISABLE_TELEMETRY=1"

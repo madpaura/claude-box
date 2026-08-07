@@ -2,10 +2,11 @@
 # Manage the LiteLLM sidecar that lets Claude Code talk to an in-house
 # OpenAI-compatible LLM gateway.
 #
-#   ./llm-gateway/gateway.sh up       # start (or restart) the proxy
-#   ./llm-gateway/gateway.sh status   # is it up, and does it answer?
-#   ./llm-gateway/gateway.sh logs     # follow proxy logs
-#   ./llm-gateway/gateway.sh down     # stop and remove it
+#   ./llm-gateway/gateway.sh up          # start (or restart) the proxy
+#   ./llm-gateway/gateway.sh up --debug  # same, logging every upstream request/response
+#   ./llm-gateway/gateway.sh status      # is it up, and does it answer?
+#   ./llm-gateway/gateway.sh logs        # follow proxy logs
+#   ./llm-gateway/gateway.sh down        # stop and remove it
 #
 # Then: claude-box --inhouse
 
@@ -48,6 +49,11 @@ case "${1:-up}" in
   up)
     load_env
     render_config
+    EXTRA_ARGS=()
+    if [ "${2:-}" = "--debug" ] || [ "${LITELLM_DEBUG:-0}" = 1 ]; then
+      EXTRA_ARGS=(--detailed_debug)
+      echo "==> debug logging on — watch the upstream request with: $0 logs"
+    fi
     docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
     docker rm -f "$NAME" >/dev/null 2>&1 || true
 
@@ -61,7 +67,8 @@ case "${1:-up}" in
       -e "INHOUSE_LLM_BASE_URL=$INHOUSE_LLM_BASE_URL" \
       -e "INHOUSE_LLM_TOKEN=$INHOUSE_LLM_TOKEN" \
       -e "LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY" \
-      "$LITELLM_IMAGE" --config /app/config.yaml --port 4000 >/dev/null
+      "$LITELLM_IMAGE" --config /app/config.yaml --port 4000 \
+      "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" >/dev/null
 
     printf "==> waiting for proxy"
     for _ in $(seq 60); do
@@ -99,6 +106,8 @@ case "${1:-up}" in
     curl -fsS -H "Authorization: Bearer $LITELLM_MASTER_KEY" "http://127.0.0.1:$PORT/v1/models" 2>/dev/null \
       | python3 -c 'import sys,json;print(", ".join(m["id"] for m in json.load(sys.stdin).get("data",[])))' 2>/dev/null \
       || echo "could not list models"
+    echo "          (use these names in /model — claude-box --inhouse defaults to"
+    echo "           $INHOUSE_LLM_MODEL and $INHOUSE_LLM_SMALL_MODEL)"
     ;;
 
   logs)    docker logs -f --tail 100 "$NAME" ;;

@@ -135,10 +135,17 @@ claude-box --inhouse
 
 `--inhouse` joins the container to the sidecar's docker network and sets
 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` plus all model slots
-(`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` → `inhouse-main` / `inhouse-small`),
-so whichever model your `settings.json` selects resolves to the gateway. It also sets
+(`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`), so whichever model your
+`settings.json` selects resolves to the gateway. It also sets
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `DISABLE_TELEMETRY=1`. Without the
 flag, nothing changes — you still talk to Anthropic with your normal login.
+
+**Model names are your gateway's real names.** The proxy registers each model twice —
+under the gateway's own name (e.g. `DSllmOCoderStable`) and under a stable alias
+(`inhouse-main` / `inhouse-small`) — and Claude Code is pointed at the real name. That
+way the name Claude Code sends is a name your gateway accepts even if something in the
+chain forwards the requested name instead of the mapped one. `gateway.sh status` lists
+every name you can pass to `/model`.
 
 ### Gateway files
 
@@ -168,6 +175,35 @@ flag, nothing changes — you still talk to Anthropic with your normal login.
 - **Testing without the gateway**: run `./llm-gateway/mock-openai.py` and point
   `gateway.env` at `http://host.docker.internal:8899/v1` — it logs the headers it
   receives, so you can confirm what actually reaches the upstream.
+
+### Troubleshooting
+
+**`API Error: 402 {"detail":"The <model> you used is not available…"}`** — that reply
+comes from your gateway, not Anthropic, so the plumbing is working; the gateway just
+doesn't recognise the model name it received. Check `gateway.sh status` lists the name
+you selected with `/model`, and prefer the gateway's real model names over the
+aliases.
+
+**See exactly what the proxy sends upstream:**
+
+```bash
+./llm-gateway/gateway.sh up --debug
+# reproduce the failure, then:
+./llm-gateway/gateway.sh logs 2>&1 | grep -A3 "POST Request Sent"
+```
+
+That prints the literal upstream request — model name, headers and body — which
+settles whether the problem is on the Claude Code side, the proxy mapping, or the
+gateway.
+
+**Check the proxy in isolation**, without Claude Code in the picture:
+
+```bash
+curl -sS http://127.0.0.1:4000/v1/messages \
+  -H "x-api-key: $LITELLM_MASTER_KEY" -H 'anthropic-version: 2023-06-01' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"<your model>","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}'
+```
 
 ## Ship the image without a registry
 

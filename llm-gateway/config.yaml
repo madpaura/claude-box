@@ -1,34 +1,43 @@
 # LiteLLM proxy config — translates Claude Code's Anthropic Messages API calls
 # (/v1/messages) into OpenAI /chat/completions calls against an in-house gateway.
 #
-# Values come from gateway.env (see gateway.env.example). Claude Code asks for the
-# model names in ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL; those must match the
-# model_name entries below.
+# Values come from gateway.env (see gateway.env.example); gateway.sh renders the
+# PLACEHOLDER_* names into a copy before starting the proxy.
+#
+# Each model is registered under TWO names: the gateway's real model name and a
+# stable alias (inhouse-main / inhouse-small). Claude Code is pointed at the real
+# name, so if anything in the chain forwards the requested name verbatim instead of
+# the mapped one, the gateway still receives a name it knows.
+
+# Shared deployment params (YAML anchors; LiteLLM ignores unknown top-level keys).
+x-inhouse-main: &inhouse_main
+  model: openai/PLACEHOLDER_MAIN_MODEL
+  api_base: os.environ/INHOUSE_LLM_BASE_URL
+  api_key: os.environ/INHOUSE_LLM_TOKEN
+  # Identifying headers the gateway was provisioned against (RooCode).
+  extra_headers: &roo_headers
+    User-Agent: RooCode/3.52.3
+    X-Title: Roo Code
+    HTTP-Referer: https://github.com/RooVetGit/Roo-Cline
+
+x-inhouse-small: &inhouse_small
+  model: openai/PLACEHOLDER_SMALL_MODEL
+  api_base: os.environ/INHOUSE_LLM_BASE_URL
+  api_key: os.environ/INHOUSE_LLM_TOKEN
+  extra_headers: *roo_headers
 
 model_list:
-  # Main model — used for Sonnet/Opus slots (i.e. normal turns).
+  # Main model — used for the Opus/Sonnet slots (normal turns).
+  - model_name: PLACEHOLDER_MAIN_MODEL
+    litellm_params: *inhouse_main
   - model_name: inhouse-main
-    litellm_params:
-      model: openai/PLACEHOLDER_MAIN_MODEL
-      api_base: os.environ/INHOUSE_LLM_BASE_URL
-      api_key: os.environ/INHOUSE_LLM_TOKEN
-      # Identifying headers the gateway was provisioned against (RooCode).
-      extra_headers:
-        User-Agent: RooCode/3.52.3
-        X-Title: Roo Code
-        HTTP-Referer: https://github.com/RooVetGit/Roo-Cline
+    litellm_params: *inhouse_main
 
   # Small/fast model — used for background work (titles, summaries, file watching).
-  # Point it at a cheaper model if the gateway offers one; same model is fine.
+  - model_name: PLACEHOLDER_SMALL_MODEL
+    litellm_params: *inhouse_small
   - model_name: inhouse-small
-    litellm_params:
-      model: openai/PLACEHOLDER_SMALL_MODEL
-      api_base: os.environ/INHOUSE_LLM_BASE_URL
-      api_key: os.environ/INHOUSE_LLM_TOKEN
-      extra_headers:
-        User-Agent: RooCode/3.52.3
-        X-Title: Roo Code
-        HTTP-Referer: https://github.com/RooVetGit/Roo-Cline
+    litellm_params: *inhouse_small
 
 litellm_settings:
   # Claude Code sends Anthropic-only params (cache_control, thinking, betas...).
