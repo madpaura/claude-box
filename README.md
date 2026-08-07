@@ -178,11 +178,19 @@ every name you can pass to `/model`.
 
 ### Troubleshooting
 
+**Requests never reach the proxy (no LiteLLM logs at all).** An `env` block in
+`~/.claude/settings.json` **overrides the process environment**, so a personal
+`ANTHROPIC_BASE_URL` there silently wins over the one `--inhouse` sets and the traffic
+goes straight to that endpoint. `--inhouse` handles this by writing the gateway
+settings to `/etc/claude-code/managed-settings.json` inside the container — managed
+settings outrank user settings — so this is fixed as of the version that mounts that
+file. If you're on an older checkout, `git pull`.
+
 **`API Error: 402 {"detail":"The <model> you used is not available…"}`** — that reply
-comes from your gateway, not Anthropic, so the plumbing is working; the gateway just
-doesn't recognise the model name it received. Check `gateway.sh status` lists the name
-you selected with `/model`, and prefer the gateway's real model names over the
-aliases.
+comes from a gateway, not from Anthropic. Check *which* gateway: if the "available
+models" list isn't the one your in-house endpoint serves, you're hitting a different
+endpoint entirely (see above). If it is the right gateway, it simply doesn't recognise
+the model name — check `gateway.sh status` lists the name you picked with `/model`.
 
 **See exactly what the proxy sends upstream:**
 

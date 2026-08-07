@@ -121,15 +121,49 @@ if [ "$INHOUSE" = 1 ]; then
   # if something in the chain forwards it unmapped.
   MAIN_MODEL="${INHOUSE_LLM_MODEL:?set in $ENV_FILE}"
   SMALL_MODEL="${INHOUSE_LLM_SMALL_MODEL:-$MAIN_MODEL}"
+
+  # These go in a *managed settings* file rather than plain -e vars: an "env" block
+  # in ~/.claude/settings.json overrides the process environment, so a user-level
+  # ANTHROPIC_BASE_URL would silently win and the traffic would never reach the
+  # proxy. Managed settings outrank user settings, so this always takes effect.
+  python3 - "$BOX_HOME/managed-settings.json" \
+      "http://$GATEWAY_NAME:4000" "${LITELLM_MASTER_KEY:?set in $ENV_FILE}" \
+      "$MAIN_MODEL" "$SMALL_MODEL" <<'PY'
+import json, os, sys
+path, base_url, token, main_model, small_model = sys.argv[1:6]
+settings = {"env": {
+    "ANTHROPIC_BASE_URL": base_url,
+    "ANTHROPIC_AUTH_TOKEN": token,
+    "ANTHROPIC_MODEL": main_model,
+    "ANTHROPIC_SMALL_FAST_MODEL": small_model,
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": main_model,
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": main_model,
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": small_model,
+    # Nothing should leak to Anthropic while running against the in-house gateway.
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_TELEMETRY": "1",
+    # An inherited API key would take precedence over the auth token above.
+    "ANTHROPIC_API_KEY": "",
+}}
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(settings, f, indent=2)
+os.replace(tmp, path)
+PY
+  chmod 600 "$BOX_HOME/managed-settings.json"
+
+  MOUNTS+=(-v "$BOX_HOME/managed-settings.json:/etc/claude-code/managed-settings.json:ro")
+
+  # Belt and braces: the same values as plain env vars, for anything that reads the
+  # process environment directly. The managed settings file is what actually wins.
   ENVFLAGS=(
     -e "ANTHROPIC_BASE_URL=http://$GATEWAY_NAME:4000"
-    -e "ANTHROPIC_AUTH_TOKEN=${LITELLM_MASTER_KEY:?set in $ENV_FILE}"
+    -e "ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY"
     -e "ANTHROPIC_DEFAULT_OPUS_MODEL=$MAIN_MODEL"
     -e "ANTHROPIC_DEFAULT_SONNET_MODEL=$MAIN_MODEL"
     -e "ANTHROPIC_DEFAULT_HAIKU_MODEL=$SMALL_MODEL"
     -e "ANTHROPIC_MODEL=$MAIN_MODEL"
     -e "ANTHROPIC_SMALL_FAST_MODEL=$SMALL_MODEL"
-    # Nothing should leak to Anthropic while running against the in-house gateway.
     -e "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
     -e "DISABLE_TELEMETRY=1"
   )
